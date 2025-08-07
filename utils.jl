@@ -12,6 +12,16 @@ function gausswin(N, α)
     return exp.(-0.5 * (α * n / (L / 2)) .^ 2)
 end
 
+# hanning window function
+function hanningwin(N)
+    if N == 1
+        return 1.0
+    else
+        n = 0:(N - 1)
+        return 0.54 .- 0.46 * cos.(2 * π * n / (N - 1))
+    end
+end
+
 # function to generate grid points
 function grid(xs::AbstractVector...)
     nd = length(xs)
