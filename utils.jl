@@ -1,8 +1,17 @@
 using LinearAlgebra
+using FFTW
 
 # even/odd indexing function
 function even_RL(x)
     return Int(1 - mod(x, 2.0)); # helps with using odd data points
+end
+
+# function to return center M indicies of array with size N
+function center_idcs(N, M)
+    nd = length(N)
+    center_idx = ntuple(d -> floor(Int, N[d] / 2) + even_RL(N[d]), nd)
+    M_idcs = ntuple(d -> (-floor(Int, M[d] / 2):floor(Int, M[d] / 2) - even_RL(M[d])), nd)
+    return ntuple(d -> center_idx[d] .+ M_idcs[d], nd)
 end
 
 # gaussian window function (reflects matlab gausswin.m)
@@ -33,4 +42,25 @@ function grid(xs::AbstractVector...)
         xgrd[:, d] = repeat(reshape(xs[d], shape), rep...)[:]
     end
     return xgrd
+end
+
+# function to zero pad array x to size N
+function zero_pad(x; N=size(x))
+    sz = size(x);
+    x_pad = zeros(eltype(x), N)
+    idcs = center_idcs(N, sz)
+    x_pad[idcs...] .= x
+    return x_pad
+end
+
+# function to compute full fourier transform with shifts
+function ftnd(x; N=size(x), dims=1:ndims(x))
+    x = zero_pad(x; N=N)
+    return fftshift(fft(ifftshift(x, dims), dims), dims)
+end
+
+# function to compute full inverse fourier transform with shifts
+function iftnd(X; N=size(X), dims=1:ndims(X))
+    X = zero_pad(X; N=N);
+    return fftshift(ifft(ifftshift(X, dims), dims), dims)
 end
