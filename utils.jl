@@ -4,14 +4,18 @@ using LinearMapsAA
 
 # even/odd indexing function
 function even_RL(x)
-    return Int(1 - mod(x, 2.0)); # helps with using odd data points
+    if x == 0
+        return 0
+    else
+        return Int(1 - mod(x, 2.0)); # helps with using odd data points
+    end
 end
 
 # function to return center M indicies of array with size N
 function center_idcs(N, M)
     nd = length(N)
-    center_idx = ntuple(d -> floor(Int, N[d] / 2) + even_RL(N[d]), nd)
-    M_idcs = ntuple(d -> (-floor(Int, M[d] / 2):floor(Int, M[d] / 2) - even_RL(M[d])), nd)
+    center_idx = ntuple(d -> N[d]==1 ? 1 : floor(Int, N[d] / 2) + even_RL(N[d]), nd)
+    M_idcs = ntuple(d -> -floor(Int, M[d] / 2):floor(Int, M[d] / 2) - even_RL(M[d]), nd)
     return ntuple(d -> center_idx[d] .+ M_idcs[d], nd)
 end
 
