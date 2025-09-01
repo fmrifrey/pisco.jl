@@ -65,44 +65,45 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     return ChC
 end
 
-function G_matrix(U,)
+function G_matrix(W, Λ_cidx, N_cal, N_gzp)
 
     # get sizes and parameters
-    nd = ndims(kcal) - 1 # number of spatial dimensions
-    Q = size(kcal, nd + 1) # number of coils
-    Λ_len = size(Λ_cidx, 1) # number of kernel points
-    τ = floor(Int, maximum(abs.(Λ_cidx[:]))) # kernel radius in each dimension
-    
-    # reshape W into blocks
-    W = I - Vr*Vr'; # null space projection matrix
-    W_blocks = permutedims(reshape(W, Λ_len, Q, Λ_len, Q), (2,4,1,3)); # Q x Q x Λ_len x Λ_len
+    Λ_len = size(Λ_cidx, 1); # number of kernel points
+    Q = Int.(size(W,1)/Λ_len); # number of coils
+    nd = size(Λ_cidx, 2); # number of spatial dimensions
+    τ = floor(Int, maximum(abs.(Λ_cidx[:]))); # kernel radius in each dimension
+
+    # reshape W into blocks for placing into G
+    W_blocks = permutedims(reshape(W, Λ_len, Q, Λ_len, Q), (1, 2, 4, 3)) # Λ_len x Q x Q x Λ_len
+
+    # get target indices for placing W blocks into G
+    G_target_sidx = ntuple(d -> (2 * τ + 1) + 1 .+ Λ_cidx[end:-1:1, d] .+ Λ_cidx[:, d]', nd) # matrix of subscript indicies for each dim
+    G_target_lidx = LinearIndices(ones([2 * (2 * τ + 1) for d in 1:nd]...))[map(CartesianIndex, G_target_sidx...)] # matrix of linear indicies
 
     # form the fourier transform of G(x)
-    ft_G = zeros(ComplexF64, Q, Q, (2 * (2 * τ + 1))^nd);
-    Lidx = LinearIndices(ones([2 * (2 * τ + 1) for d in 1:nd]...));
-    for s = 1:Λ_len
-        idcs = vcat(ntuple(i -> Lidx[[2*τ + 2 + Λ_cidx[Λ_len-i+1, d] + Λ_cidx[s, d] for d in 1:nd]...], Λ_len)...);
-        ft_G[:, :, idcs] .+= W_blocks[:, :, :, s];
+    grid_size = 2 * (2 * τ + 1)
+    ft_G = zeros(ComplexF64, (grid_size)^nd, Q, Q)
+    for s in 1:Λ_len
+        ft_G[G_target_lidx[s, :], :, :] .+= W_blocks[:, :, :, s]
     end
-    ft_G = reshape(ft_G, Q, Q, [2 * (2 * τ + 1) for d in 1:nd]...);
+    ft_G = reshape(ft_G, grid_size * ones(Int, nd)..., Q, Q)
 
-    # zero-pad ft_G for interpolation
-    ft_G_zp = zeros(ComplexF64, Q, Q, [N_cal + N_gzp for _ in 1:nd]...);
-    ft_G_zp[:, :, ntuple(d -> floor(Int,(N_cal + N_gzp)/2) .+ (-(2*τ+1):2*τ), nd)...] .= ft_G; # look into flip here
+    # create checkerboard modulation pattern for G
+    mod_pattern = ones(Float64, grid_size * ones(Int, nd)...)
+    for d in 1:nd
+        shape = ntuple(i -> i == d ? grid_size : 1, nd)
+        mod_pattern .*= reshape((-1) .^ (0:(grid_size-1)), shape)
+    end
 
     # create phase kernel (why?)
-    gzp_sidx = ntuple(d -> -floor(Int, (N_cal + N_gzp) / 2):floor(Int, (N_cal + N_gzp) / 2)-even_RL((N_cal + N_gzp) / 2), nd); # subscript indices for G zero-pad region
-    gzp_cidx = grid(gzp_sidx...); # coordinate indices for G zero-pad region
-    φ2 = -exp.(-1im * 2 * pi * (gzp_cidx / (N_cal + N_gzp)) * ((N_cal + N_gzp) - (2*τ + 1))*ones(nd)); # keep an eye on the sign
-    φ2 = reshape(φ2, (N_cal + N_gzp) * ones(Int, nd)...);
+    gzp_sidx = ntuple(d -> -floor(Int, (N_cal + N_gzp) / 2):floor(Int, (N_cal + N_gzp) / 2)-even_RL((N_cal + N_gzp) / 2), nd) # subscript indices for G zero-pad region
+    gzp_cidx = grid(gzp_sidx...) # coordinate indices for G zero-pad region
+    φ = -exp.(-1im * 2 * pi * (gzp_cidx / (N_cal + N_gzp)) * ((N_cal + N_gzp) - (2 * τ + 1)) * ones(nd)) # keep an eye on the sign
+    φ = reshape(φ, (N_cal + N_gzp) * ones(Int, nd)...)
 
-    # compute ift of G
-    G = fft(conj.(ft_G_zp), 3:nd+2); # .* reshape(φ2, 1, 1, (N_cal + N_gzp) * ones(Int, nd)...); # ift of G in last nd dims
-    G = fftshift(G, 3:nd+2); # fftshift
-    G = reshape(G, Q, Q, (N_cal + N_gzp)^nd);
-
-    # normalize G by the length of the kernel
-    G /= Λ_len;
+    # compute ft of modulated G
+    ft_G_zp = zero_pad(conj.(ft_G) .* mod_pattern; N=((N_cal + N_gzp) * ones(Int, nd)..., Q, Q))
+    G = 1/Λ_len * fft(ft_G_zp, 1:nd) .* φ
 
     return G
 end
