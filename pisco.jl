@@ -1,5 +1,185 @@
 using LinearAlgebra
 
+function pisco_smaps(kdata;
+    # PISCO tecnique flags
+    kernel_shape=1, # (0 for rect, 1 for circle)
+    fft_C_mtx=1, # option to approximate ChC with FFTs
+    sketched_SVD=1, # option to used sketched (randomized) SVD
+    subspace_itr_G=0, # option to use subspace iteration to compute nullspace vectors of G
+
+    # PISCO parameters
+    τ=Int(3), # neighborhood size (radius)
+    N_cal=32, # size of calibration region
+    σ_thresh=0.002, # threshold for singular values
+    d_sk=50, # sketch dimension for SVD of ChC (overestimation of the rank)
+    N_gzp=24, # number of vo/pixels to interpolate (zero-pad) in each dimension of G matrix
+    α=100, # Gaussian window parameter for phase normalization
+    L=1, # number of sensitivity map sets to estimate
+
+    # other options
+    verbose=0 # option to print out debug info
+)
+
+    # get sizes
+    nd = ndims(kdata) - 1 # number of image dimensions
+    N = size(kdata)[1:nd] # image size
+    Q = size(kdata, nd + 1) # number of channels
+
+    # extract calibration data from kcal
+    cal_sidx = center_idcs(N, N_cal * ones(nd)) # subscript indices for calibration region (vector of vectors for each dim)
+    kcal = kdata[cal_sidx..., :]
+
+    # create kernel neighborhood
+    Λ_cidx = grid([-τ:τ for d in 1:nd]...) # coordinate indicies for kernel neighborhood
+    if kernel_shape == 1
+        cmask = vec(sum(Λ_cidx .^ 2, dims=2)) .<= τ^2
+        Λ_cidx = Λ_cidx[cmask, :] # mask out edges if using ellipsoidal kernel
+    end
+    Λ_len = size(Λ_cidx, 1) # final kernel (patch) size
+
+    # print update
+    if verbose == 1
+        println("PISCO parameters:")
+        println("\tkernel shape: ", kernel_shape == 0 ? "rectangular" : "circular")
+        println("\tkernel radius (τ): ", τ)
+        println("\tcalibration region size: ", N_cal)
+        println("\tnumber of coils: ", Q)
+        println("\tnumber of kernel points: ", Λ_len)
+        println("\tfft_C_mtx: ", fft_C_mtx == 0 ? "no" : "yes")
+        println("\tsketch_SVD: ", sketched_SVD == 0 ? "no" : "yes")
+        println("\tsubspace_itr_G: ", subspace_itr_G == 0 ? "no" : "yes")
+        if sketched_SVD == 1
+            println("\tsketch dimension (d_sk): ", d_sk)
+        end
+        println("\tσ_thresh: ", σ_thresh)
+        println("\tN_gzp: ", N_gzp)
+        println("\tα (Gaussian window parameter): ", α)
+        println("\tL (number of sensitivity maps to estimate): ", L)
+        println("forming convolution gram matrix ChC... ")
+    end
+
+    # form the convolution gram matrix ChC
+    t0_ChC = time();
+    if fft_C_mtx == 0 # naive approach
+        C = C_matrix(kcal, Λ_cidx, N_cal) # calculate convolution matrix C explicitly
+        ChC = C' * C # calculate ChC via matrix product
+    else # direct FFT-based approach
+        ChC = ChC_matrix_fft(kcal, Λ_cidx, N_cal)
+    end
+    tend_ChC = time();
+
+    # print update with computation time
+    t_ChC = tend_ChC - t0_ChC
+    if verbose == 1
+        println("done.")
+        println("\tcomputation time: ", t_ChC, " seconds")
+        println("computing nullspace of ChC... ")
+    end
+
+    # compute the null space of ChC
+    t0_nullspace_ChC = time();
+    if sketched_SVD == 0 # full SVD of ChC
+        (~, σ, V) = svd(ChC)
+    else # sketched SVD of ChC
+        S_sk = 1 / sqrt(d_sk) * (randn(d_sk, Λ_len * Q) + 1im * randn(d_sk, Λ_len * Q))
+        (~, σ, V) = svd(S_sk * ChC)
+    end
+    r = count(σ / σ[1] .> σ_thresh)
+    Vr = V[:, 1:r] # get the column space basis of C
+    W = I - Vr * Vr' # get null space projection matrix
+    tend_nullspace_ChC = time();
+
+    # print update with computation time
+    t_nullspace_ChC = tend_nullspace_ChC - t0_nullspace_ChC
+    if verbose == 1
+        println("done.")
+        println("\tcomputation time: ", t_nullspace_ChC, " seconds")
+        println("\testimated rank(ChC): ", r)
+        println("forming G matrix... ")
+    end
+
+    # calculate the G matrix
+    t0_G = time();
+    G = G_matrix(W, Λ_cidx, N_cal, N_gzp) # form the G matrix
+    G = reshape(G, (N_cal + N_gzp)^nd, Q, Q) # reshape G into (vo/pixels) x Q x Q array
+    tend_G = time();
+
+    # print update with computation time
+    t_G = tend_G - t0_G
+    if verbose == 1
+        println("done.")
+        println("\tcomputation time: ", t_G, " seconds")
+        println("estimating sensitivity maps from nullspace of G... ")
+    end
+
+    # estimate sensitivity maps from G
+    t0_nullspace_G = time();
+    smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
+    λ_lores = zeros(ComplexF64, Q, (N_cal + N_gzp)^nd)
+    for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
+        # estimate sensitivities at vo/pixel x as last L null space vectors of G(x)
+        if subspace_itr_G == 1 # using subspace iteration
+            (σ, V) = subspace_iteration(G[x, :, :], L; maxit=30, tol=1e-6)
+        else # using svd
+            (~, σ, V) = svd(G[x, :, :])
+        end
+        smaps_lores[:, :, x] = V[:, end-L+1:end]
+        λ_lores[:, x] = σ
+    end
+    smaps_lores = permutedims(reshape(smaps_lores, Q, L, (N_cal + N_gzp) * ones(Int, nd)...), ((3:nd+2)..., 1, 2))
+    λ_lores = permutedims(reshape(λ_lores, Q, (N_cal + N_gzp) * ones(Int, nd)...), ((2:nd+1)..., 1))
+    tend_nullspace_G = time();
+
+    # print update with computation time
+    t_nullspace_G = tend_nullspace_G - t0_nullspace_G
+    if verbose == 1
+        println("done.")
+        println("\tcomputation time: ", t_nullspace_G, " seconds")
+        println("normalizing phase of the sensitivity maps... ")
+    end
+
+    # create nd apodizing window for phase normalization
+    apodizing_window = ones(ComplexF64, (N_cal + N_gzp) * ones(Int, nd)...)
+    for d in 1:nd
+        shape = ntuple(i -> i == d ? (N_cal + N_gzp) : 1, nd)
+        apodizing_window .*= reshape(gausswin(N_cal + N_gzp; α), shape)
+    end
+
+    # get low-resolution image data
+    ft_idata_lores = zero_pad(kcal; N=((N_cal + N_gzp) * ones(Int, nd)..., Q))
+    idata_lores = iftnd(ft_idata_lores .* apodizing_window; dims=1:nd)
+
+    # normalize the phase of the sensitivity maps based on the low-resolution image data
+    cim = sum(conj.(smaps_lores) .* idata_lores; dims=nd + 1) ./ sum(abs2.(smaps_lores); dims=nd + 1)
+    phase_norm = exp.(1im * angle.(cim))
+    smaps_lores_corr = smaps_lores .* phase_norm # apply phase normalization
+
+    # print update
+    if verbose == 1
+        println("done.")
+        println("interpolating sensitivity maps... ")
+    end
+
+    # create nd hanning window for fft interpolation
+    w_sm = ones(ComplexF64, (N_cal + N_gzp) * ones(Int, nd)...)
+    for d in 1:nd
+        shape = ntuple(i -> i == d ? (N_cal + N_gzp) : 1, nd)
+        w_sm .*= reshape(hanningwin(N_cal + N_gzp), shape)
+    end
+
+    # interpolate sensitivity maps using fft
+    smaps = iftnd(ftnd(smaps_lores_corr; dims=1:nd) .* w_sm; dims=1:nd, N=(N..., Q, L))
+    λ = iftnd(ftnd(λ_lores; dims=1:nd) .* w_sm; dims=1:nd, N=(N..., Q))
+
+    # print update
+    if verbose == 1
+        println("done.")
+        println("total time: ", t_ChC + t_nullspace_ChC + t_G + t_nullspace_G, " seconds")
+    end
+
+    return smaps, λ
+end
+
 function C_matrix(kcal, Λ_cidx, N_cal)
 
     # get sizes and parameters
