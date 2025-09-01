@@ -1,5 +1,6 @@
 using LinearAlgebra
 using FFTW
+using LinearMapsAA
 
 # even/odd indexing function
 function even_RL(x)
@@ -55,12 +56,83 @@ end
 
 # function to compute full fourier transform with shifts
 function ftnd(x; N=size(x), dims=1:ndims(x))
-    x = zero_pad(x; N=N)
+    x = prod(N./size(x)) * zero_pad(x; N=N)
     return fftshift(fft(ifftshift(x, dims), dims), dims)
 end
 
 # function to compute full inverse fourier transform with shifts
 function iftnd(X; N=size(X), dims=1:ndims(X))
-    X = zero_pad(X; N=N);
+    X = prod(N ./ size(X)) * zero_pad(X; N=N)
     return fftshift(ifft(ifftshift(X, dims), dims), dims)
+end
+
+# conjugate gradient solver function
+function cg(A, x0, b; niter=30, tol=1e-6)
+
+    # initialize variables
+    r0 = b - A * x0
+    if size(A, 1) != size(A, 2) # if non-square, solve normal equations
+        r0 = A' * r0
+    end
+    rk = copy(r0)
+    pk = copy(r0)
+    xk = copy(x0)
+    rktrk = real(dot(rk[:], rk[:]))
+
+    # loop through iterations
+    for i in 1:niter
+
+        # check for convergence
+        if sqrt(rktrk) < tol
+            return xk
+        end
+
+        # calculate step size
+        Apk = A * pk
+        if size(A, 1) != size(A, 2) # if non-square, solve normal equations
+            Apk = A' * Apk
+        end
+        pktApk = dot(pk, Apk)
+        alpha = rktrk / pktApk
+
+        # gradient step
+        xk1 = xk + alpha * pk
+        rk1 = rk - alpha * Apk
+
+        # update aux variables
+        rk1trk1 = real(dot(rk1[:], rk1[:]))
+        beta = rk1trk1 / rktrk
+        pk1 = beta * pk + rk1
+
+        # update next iteration
+        rk = rk1
+        xk = xk1
+        pk = pk1
+        rktrk = rk1trk1
+
+    end
+
+    # return xk
+    return xk
+
+end
+
+# function to compute eigenvectors of matrix using subspace iteration
+function subspace_iteration(A, k; maxit=100, tol=1e-6)
+    n = size(A, 1)
+    V = randn(eltype(A), n, k) # initial random subspace
+    V,_ = qr(V) # orthogonalize
+
+    # subspace iteration
+    for _ in 1:maxit
+        V_new,_ = qr(A * V)
+        if opnorm(V_new .- V, 2) < tol
+            break
+        end
+        V = V_new
+    end
+
+    # get eigenvalues
+    eigs = diag(V' * (A * V))
+    return eigs, Matrix(V)
 end
