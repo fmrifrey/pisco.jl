@@ -1,4 +1,4 @@
-# PISCO Sensitivity Map Estimation for Julia
+# pisco.jl: PISCO Sensitivity Map Estimation for Julia
 written by David Frey (djfrey@umich.edu), based on similar [matlab-based software package](github.com/ralobos/PISCO) by Rodrigo Lobos (rlobos@umich.edu)
 
 The problem formulation and methods implemented by the associated software to this script were originally reported in:
