@@ -12,6 +12,7 @@ The problem formulation and methods implemented by the associated software to th
 Sample 2D and 3D multi-channel MRI datasets are provided in the [`/data`](./data) directory. The [`pisco_demo_2D.ipynb`](./pisco_demo_2D.ipynb) notebook offers a detailed, step-by-step walkthrough of sensitivity map estimation from the 2D sample dataset using PISCO. For 3D data, [`pisco_demo_3D.ipynb`](./pisco_demo_3D.ipynb) demonstrates how to apply the relevant functions in this package to estimate sensitivity maps, focusing on practical usage rather than step-by-step explanation.
 
 ## dev TODO list
+- add FFT interpolation as optional in pisco_smaps
 - look into subspace iteration speed
 - look into multithreading for subspace iteration/SVD on G matrix
 - add more theory/documentation in 2D example markdown
