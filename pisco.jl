@@ -193,9 +193,7 @@ function C_matrix(kcal, Λ_cidx, N_cal)
     k_cidx = grid(ntuple(d -> τ+1+even_RL(N_cal):N_cal-τ, nd)...); # grid of shift points
     for (i, row) in enumerate(eachrow(k_cidx))
         idcs = ntuple(d -> row[d] .+ Λ_cidx[:, d], nd); # shifted indicies
-        for q in 1:Q
-            C[i,:,q] .= getindex.(Ref(kcal), idcs..., q);
-        end
+        C[i,:,:] .= getindex.(Ref(kcal), idcs..., 1:Q);
     end
     C = reshape(C, ((N_cal .- 2*τ .- even_RL.(N_cal))^nd, Λ_len*Q)); # reshape
 
@@ -215,27 +213,23 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     ρ = ftnd(kcal, N=(Int.(N_pad * ones(nd))..., Q), dims=1:nd)
 
     # columns of each C_p^H C_q block
-    ChC_blocks = zeros(ComplexF64, Λ_len, Λ_len, Q, Q)
     pad_cidx = grid(ntuple(_ -> -floor(Int, N_pad / 2):floor(Int, N_pad / 2)-even_RL(N_pad / 2), nd)...) # linear indices for padded calibration region
-    patch_idcs = ntuple(d -> round(Int, N_pad / 2) + even_RL(N_pad / 2) .+ Λ_cidx[:, d], nd) # subscript indices for filling patches in ChC matrix
+    patch_idcs = floor(Int, N_pad / 2) + 1 .+ Λ_cidx # subscript indices for filling patches in ChC matrix
     φ = exp.(-1im * 2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
-    for p in 1:Q, q in p:Q
-        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
-        ρρ_pq = conj(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
+    ChC_blocks = zeros(ComplexF64, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
+    for q in 1:Q
+        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q, for p = q:Q
+        ρρ_pq = reshape(conj.(ρ)[ntuple(_ -> Colon(), nd)..., q:Q], (Int.(N_pad*ones(nd))..., 1, Q-q+1)) .* ρ[ntuple(_ -> Colon(), nd)..., q] # pth channel in (nd+2)th dimension
 
-        for i in 1:Λ_len # loop through all shift indicies
-            # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
-            φρρ_pqi = reshape(φ[i, :], size(ρρ_pq)) .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q
-            δss_pqi = iftnd(φρρ_pqi) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
+        # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
+        φρρ_ipq = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len)) .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q: i in (nd+1)th dimension
+        δss_ipq = iftnd(φρρ_ipq; dims=1:nd) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
 
-            # extract patch and write to ChC pq block
-            ChC_blocks[:, i, p, q] .= getindex.(Ref(δss_pqi), patch_idcs...)
-        end
+        # extract patch and write to ChC pq block
+        ChC_blocks[:,:,q:Q,q] .= δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :]
 
-        # fill qp block by exploiting hermitian symmetry
-        if p != q
-            ChC_blocks[:, :, q, p] .= ChC_blocks[:, :, p, q]'
-        end
+        # Hermitian symmetry
+        ChC_blocks[:, :, q, q+1:Q] .= permutedims(conj.(ChC_blocks[:, :, q+1:Q, q]), (2,1,3))
 
     end
 
