@@ -102,6 +102,7 @@ function pisco_smaps(kdata;
     t0_G = time();
     G = G_matrix(W, Λ_cidx, N_cal, N_gzp) # form the G matrix
     G = reshape(G, (N_cal + N_gzp)^nd, Q, Q) # reshape G into (vo/pixels) x Q x Q array
+    G = permutedims(G, (2,3,1))
     tend_G = time();
 
     # print update with computation time
@@ -114,17 +115,22 @@ function pisco_smaps(kdata;
 
     # estimate sensitivity maps from G
     t0_nullspace_G = time();
-    smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
-    λ_lores = zeros(ComplexF64, Q, (N_cal + N_gzp)^nd)
-    for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
-        # estimate sensitivities at vo/pixel x as last L null space vectors of G(x)
-        if subspace_itr_G == 1 # using subspace iteration
-            (σ, V) = subspace_iteration(G[x, :, :], L; maxit=30, tol=1e-6)
-        else # using svd
-            (~, σ, V) = svd(G[x, :, :])
+    if subspace_itr_G == 1
+        smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
+        λ_lores = zeros(ComplexF64, L, (N_cal + N_gzp)^nd)
+        for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
+            (σ, V) = subspace_iteration((@view G[:, :, x]), L; maxit=30, tol=1e-6)
+            smaps_lores[:, :, x] = V[:, end-L+1:end]
+            λ_lores[:, x] = σ
         end
-        smaps_lores[:, :, x] = V[:, end-L+1:end]
-        λ_lores[:, x] = σ
+    else # SVD
+        smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
+        λ_lores = zeros(ComplexF64, Q, (N_cal + N_gzp)^nd)
+        for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
+            (~, σ, V) = svd((@view G[:, :, x]))
+            smaps_lores[:, :, x] = V[:, end-L+1:end]
+            λ_lores[:, x] = σ
+        end
     end
     smaps_lores = permutedims(reshape(smaps_lores, Q, L, (N_cal + N_gzp) * ones(Int, nd)...), ((3:nd+2)..., 1, 2))
     λ_lores = permutedims(reshape(λ_lores, Q, (N_cal + N_gzp) * ones(Int, nd)...), ((2:nd+1)..., 1))
