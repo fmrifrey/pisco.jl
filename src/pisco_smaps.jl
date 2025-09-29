@@ -230,6 +230,7 @@ end
 
 function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
 
+    println("ChC_matrix_fft") # debug
     # get sizes and parameters
     nd = ndims(kcal) - 1; # number of spatial dimensions
     Q = size(kcal, nd+1); # number of coils
@@ -245,8 +246,11 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     pad_cidx = grid(ntuple(_ -> -floor(Int, N_pad / 2):floor(Int, N_pad / 2)-even_RL(N_pad / 2), nd)...) # linear indices for padded calibration region
     patch_idcs = floor(Int, N_pad / 2) + 1 .+ Λ_cidx # subscript indices for filling patches in ChC matrix
     φ = cis.(-2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
+    φ = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len))
     ChC_blocks = Array{T}(undef, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
     @floop ThreadedEx() for (q, p) in Iterators.flatmap(q -> ((q, p) for p in q:Q), 1:Q)
+
+        #println("Processing block (p=", p, ", q=", q, ")") # debug
         # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
         ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
 
