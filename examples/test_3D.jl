@@ -6,21 +6,20 @@ using Random
 using LinearAlgebra
 using MAT
 using LinearMapsAA
-
-# load helper functions
-include("pisco.jl");
-include("utils.jl");
+using pisco
 
 # read in data from mat file
-kdata = ComplexF32.(1e8 * matread("./data/2D_T1_data.mat")["kData"]);
+kdata = matread("./data/3D_GRE_data.mat")["kData"];
+N = size(kdata)[1:3]; # image dimensions
+Q = size(kdata, 4); # number of coils
 
-# get sizes
-nd = ndims(kdata) - 1; # number of image dimensions
-N = size(kdata)[1:nd]; # image size
-Q = size(kdata, nd + 1); # number of channels
+# correct for the z-offset in the data (only for this dataset)
+nslices = N[3]
+dz = -22 # slice offset
+kdata .*= reshape(exp.(1im * 2π * dz * collect(center_idcs(0, nslices)...) / nslices), (1, 1, nslices, 1)); # apply linear phase
 
-# show the multi-channel image data
-idata = iftnd(kdata; dims=1:nd);
+# get image space data
+idata = iftnd(kdata; dims=1:3);
 
 # set PISCO techniques
 kernel_shape = 1; # (0 for rect, 1 for circle)
@@ -52,16 +51,16 @@ smaps, λ = pisco_smaps(kdata;
 
 # create sensitivity encoding operator
 S = LinearMapAA(
-    x -> x.*smaps, # forward
-    y -> sum(conj.(smaps) .* y, dims=nd+1), # adjoint
-    (prod(N)*Q, prod(N)); # operator size
+    x -> x .* smaps, # forward
+    y -> sum(conj.(smaps) .* y, dims=4), # adjoint
+    (prod(N) * Q, prod(N)); # operator size
     T=ComplexF64, # data type
     idim=N, # input dimensions
     odim=(N..., Q) # output dimensions
-    );
+);
 
 # solve for coil-combined image using conjugate gradient
 idata_coil_combined = cg(S, zeros(ComplexF64, N...), idata; niter=30);
 
 # get representation error (NPR)
-@show npr = norm(idata[:] - (S * idata_coil_combined)[:]) / norm(idata[:]);
+@show npr = norm(idata[:] - (S*idata_coil_combined)[:]) / norm(idata[:]);

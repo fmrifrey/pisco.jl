@@ -1,5 +1,8 @@
-using LinearAlgebra
 using FLoops
+using LinearAlgebra
+
+# export all functions
+export pisco_smaps, C_matrix, ChC_matrix_fft, G_matrix
 
 function pisco_smaps(kdata;
     # PISCO tecnique flags
