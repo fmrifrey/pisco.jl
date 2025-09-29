@@ -1,4 +1,5 @@
 using LinearAlgebra
+using FLoops
 
 function pisco_smaps(kdata;
     # PISCO tecnique flags
@@ -24,6 +25,7 @@ function pisco_smaps(kdata;
     nd = ndims(kdata) - 1 # number of image dimensions
     N = size(kdata)[1:nd] # image size
     Q = size(kdata, nd + 1) # number of channels
+    T = eltype(kdata) # data type
 
     # extract calibration data from kcal
     cal_sidx = center_idcs(N, N_cal * ones(nd)) # subscript indices for calibration region (vector of vectors for each dim)
@@ -116,20 +118,36 @@ function pisco_smaps(kdata;
     # estimate sensitivity maps from G
     t0_nullspace_G = time();
     if subspace_itr_G == 1
-        smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
-        λ_lores = zeros(ComplexF64, L, (N_cal + N_gzp)^nd)
-        for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
-            (σ, V) = subspace_iteration((@view G[:, :, x]), L; maxit=30, tol=1e-6)
-            smaps_lores[:, :, x] = V[:, end-L+1:end]
-            λ_lores[:, x] = σ
+        let G_local = G
+            result_smaps = Vector{Array{T}}(undef, (N_cal + N_gzp)^nd)
+            result_λ = Vector{Vector{T}}(undef, (N_cal + N_gzp)^nd)
+            @floop ThreadedEx() for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
+                σ,V = subspace_iteration((@view G_local[:, :, x]), L; maxit=30, tol=1e-6)
+                result_smaps[x] = V[:, end-L+1:end]
+                result_λ[x] = σ
+            end
+            smaps_lores = Array{T}(undef, Q, L, (N_cal + N_gzp)^nd)
+            λ_lores = Array{T}(undef, L, (N_cal + N_gzp)^nd)
+            for x in 1:(N_cal + N_gzp)^nd
+                smaps_lores[:, :, x] .= result_smaps[x]
+                λ_lores[:, x] .= result_λ[x]
+            end
         end
     else # SVD
-        smaps_lores = zeros(ComplexF64, Q, L, (N_cal + N_gzp)^nd)
-        λ_lores = zeros(ComplexF64, Q, (N_cal + N_gzp)^nd)
-        for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
-            (~, σ, V) = svd((@view G[:, :, x]))
-            smaps_lores[:, :, x] = V[:, end-L+1:end]
-            λ_lores[:, x] = σ
+        let G_local = G
+            result_smaps = Vector{Array{T}}(undef, (N_cal + N_gzp)^nd)
+            result_λ = Vector{Vector{T}}(undef, (N_cal + N_gzp)^nd)
+            @floop ThreadedEx() for x in 1:(N_cal+N_gzp)^nd # loop through vo/pixels
+                res = svd((@view G_local[:, :, x]))
+                result_smaps[x] = res.V[:, end-L+1:end]
+                result_λ[x] = res.S
+            end
+            smaps_lores = Array{T}(undef, Q, L, (N_cal + N_gzp)^nd)
+            λ_lores = Array{T}(undef, Q, (N_cal + N_gzp)^nd)
+            for x in 1:(N_cal + N_gzp)^nd
+                smaps_lores[:, :, x] .= result_smaps[x]
+                λ_lores[:, x] .= result_λ[x]
+            end
         end
     end
     smaps_lores = permutedims(reshape(smaps_lores, Q, L, (N_cal + N_gzp) * ones(Int, nd)...), ((3:nd+2)..., 1, 2))
@@ -145,7 +163,7 @@ function pisco_smaps(kdata;
     end
 
     # create nd apodizing window for phase normalization
-    apodizing_window = ones(ComplexF64, (N_cal + N_gzp) * ones(Int, nd)...)
+    apodizing_window = ones(T, (N_cal + N_gzp) * ones(Int, nd)...)
     for d in 1:nd
         shape = ntuple(i -> i == d ? (N_cal + N_gzp) : 1, nd)
         apodizing_window .*= reshape(gausswin(N_cal + N_gzp; α), shape)
@@ -157,7 +175,7 @@ function pisco_smaps(kdata;
 
     # normalize the phase of the sensitivity maps based on the low-resolution image data
     cim = sum(conj.(smaps_lores) .* idata_lores; dims=nd + 1) ./ sum(abs2.(smaps_lores); dims=nd + 1)
-    phase_norm = exp.(1im * angle.(cim))
+    phase_norm = sign.(cim)
     smaps_lores_corr = smaps_lores .* phase_norm # apply phase normalization
 
     # print update
@@ -167,7 +185,7 @@ function pisco_smaps(kdata;
     end
 
     # create nd hanning window for fft interpolation
-    w_sm = ones(ComplexF64, (N_cal + N_gzp) * ones(Int, nd)...)
+    w_sm = ones(T, (N_cal + N_gzp) * ones(Int, nd)...)
     for d in 1:nd
         shape = ntuple(i -> i == d ? (N_cal + N_gzp) : 1, nd)
         w_sm .*= reshape(hanningwin(N_cal + N_gzp), shape)
@@ -193,9 +211,10 @@ function C_matrix(kcal, Λ_cidx, N_cal)
     Q = size(kcal, nd+1); # number of coils
     Λ_len = size(Λ_cidx, 1); # number of kernel points
     τ = floor(Int, maximum(abs.(Λ_cidx[:]))); # kernel radius in each dimension
+    T = eltype(kcal) # data type
 
     # calculate convolution matrix C
-    C = zeros(ComplexF64, (N_cal .- 2*τ .- even_RL.(N_cal))^nd, Λ_len, Q);
+    C = Array{T}(undef, (N_cal .- 2*τ .- even_RL.(N_cal))^nd, Λ_len, Q);
     k_cidx = grid(ntuple(d -> τ+1+even_RL(N_cal):N_cal-τ, nd)...); # grid of shift points
     for (i, row) in enumerate(eachrow(k_cidx))
         idcs = ntuple(d -> row[d] .+ Λ_cidx[:, d], nd); # shifted indicies
@@ -213,6 +232,7 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     Q = size(kcal, nd+1); # number of coils
     Λ_len = size(Λ_cidx, 1); # number of kernel points
     τ = floor(Int, maximum(abs.(Λ_cidx[:]))); # kernel radius in each dimension
+    T = eltype(kcal) # data type
 
     # precompute ft of zero-padded s_q for q = 1,...Q
     N_pad = 2^(ceil(log2(N_cal + 2 * τ)))
@@ -221,22 +241,23 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     # columns of each C_p^H C_q block
     pad_cidx = grid(ntuple(_ -> -floor(Int, N_pad / 2):floor(Int, N_pad / 2)-even_RL(N_pad / 2), nd)...) # linear indices for padded calibration region
     patch_idcs = floor(Int, N_pad / 2) + 1 .+ Λ_cidx # subscript indices for filling patches in ChC matrix
-    φ = exp.(-1im * 2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
-    ChC_blocks = zeros(ComplexF64, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
-    for q in 1:Q
-        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q, for p = q:Q
-        ρρ_pq = reshape(conj.(ρ)[ntuple(_ -> Colon(), nd)..., q:Q], (Int.(N_pad*ones(nd))..., 1, Q-q+1)) .* ρ[ntuple(_ -> Colon(), nd)..., q] # pth channel in (nd+2)th dimension
+    φ = cis.(-2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
+    ChC_blocks = Array{T}(undef, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
+    @floop ThreadedEx() for (q, p) in Iterators.flatmap(q -> ((q, p) for p in q:Q), 1:Q)
+        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
+        ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
 
         # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
         φρρ_ipq = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len)) .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q: i in (nd+1)th dimension
         δss_ipq = iftnd(φρρ_ipq; dims=1:nd) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
 
         # extract patch and write to ChC pq block
-        ChC_blocks[:,:,q:Q,q] .= δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :]
+        ChC_blocks[:,:,p,q] .= (@view δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :])
 
         # Hermitian symmetry
-        ChC_blocks[:, :, q, q+1:Q] .= permutedims(conj.(ChC_blocks[:, :, q+1:Q, q]), (2,1,3))
-
+        if p != q
+            ChC_blocks[:, :, q, p] .= ChC_blocks[:, :, p, q]'
+        end
     end
 
     # reshape blocks
@@ -252,6 +273,7 @@ function G_matrix(W, Λ_cidx, N_cal, N_gzp)
     Q = Int.(size(W,1)/Λ_len); # number of coils
     nd = size(Λ_cidx, 2); # number of spatial dimensions
     τ = floor(Int, maximum(abs.(Λ_cidx[:]))); # kernel radius in each dimension
+    T = eltype(W) # data type
 
     # reshape W into blocks for placing into G
     W_blocks = permutedims(reshape(W, Λ_len, Q, Λ_len, Q), (1, 2, 4, 3)) # Λ_len x Q x Q x Λ_len
@@ -262,14 +284,14 @@ function G_matrix(W, Λ_cidx, N_cal, N_gzp)
 
     # form the fourier transform of G(x)
     grid_size = 2 * (2 * τ + 1)
-    ft_G = zeros(ComplexF64, (grid_size)^nd, Q, Q)
+    ft_G = zeros(T, (grid_size)^nd, Q, Q)
     for s in 1:Λ_len
         ft_G[G_target_lidx[s, :], :, :] .+= W_blocks[:, :, :, s]
     end
     ft_G = reshape(ft_G, grid_size * ones(Int, nd)..., Q, Q)
 
     # create checkerboard modulation pattern for G
-    mod_pattern = ones(Float64, grid_size * ones(Int, nd)...)
+    mod_pattern = ones(T, grid_size * ones(Int, nd)...)
     for d in 1:nd
         shape = ntuple(i -> i == d ? grid_size : 1, nd)
         mod_pattern .*= reshape((-1) .^ (0:(grid_size-1)), shape)
@@ -278,7 +300,7 @@ function G_matrix(W, Λ_cidx, N_cal, N_gzp)
     # create phase kernel (why?)
     gzp_sidx = ntuple(d -> -floor(Int, (N_cal + N_gzp) / 2):floor(Int, (N_cal + N_gzp) / 2)-even_RL((N_cal + N_gzp) / 2), nd) # subscript indices for G zero-pad region
     gzp_cidx = grid(gzp_sidx...) # coordinate indices for G zero-pad region
-    φ = -exp.(-1im * 2 * pi * (gzp_cidx / (N_cal + N_gzp)) * ((N_cal + N_gzp) - (2 * τ + 1)) * ones(nd)) # keep an eye on the sign
+    φ = -cis.(-2 * pi * (gzp_cidx / (N_cal + N_gzp)) * ((N_cal + N_gzp) - (2 * τ + 1)) * ones(nd)) # keep an eye on the sign
     φ = reshape(φ, (N_cal + N_gzp) * ones(Int, nd)...)
 
     # compute ft of modulated G
