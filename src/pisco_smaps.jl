@@ -1,5 +1,6 @@
 using FLoops
 using LinearAlgebra
+using Revise
 
 # export all functions
 export pisco_smaps, C_matrix, ChC_matrix_fft, G_matrix
@@ -246,24 +247,23 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     pad_cidx = grid(ntuple(_ -> -floor(Int, N_pad / 2):floor(Int, N_pad / 2)-even_RL(N_pad / 2), nd)...) # linear indices for padded calibration region
     patch_idcs = floor(Int, N_pad / 2) + 1 .+ Λ_cidx # subscript indices for filling patches in ChC matrix
     φ = cis.(-2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
-    φ = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len))
     ChC_blocks = Array{T}(undef, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
-    @floop ThreadedEx() for (q, p) in Iterators.flatmap(q -> ((q, p) for p in q:Q), 1:Q)
+    let φ_local = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len))
+        @floop ThreadedEx() for (q, p) in Iterators.flatmap(q -> ((q, p) for p in q:Q), 1:Q)
+            # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
+            ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
 
-        #println("Processing block (p=", p, ", q=", q, ")") # debug
-        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
-        ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
+            # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
+            φρρ_ipq = φ_local .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q: i in (nd+1)th dimension
+            δss_ipq = iftnd(φρρ_ipq; dims=1:nd) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
 
-        # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
-        φρρ_ipq = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len)) .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q: i in (nd+1)th dimension
-        δss_ipq = iftnd(φρρ_ipq; dims=1:nd) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
+            # extract patch and write to ChC pq block
+            ChC_blocks[:,:,p,q] .= (@view δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :])
 
-        # extract patch and write to ChC pq block
-        ChC_blocks[:,:,p,q] .= (@view δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :])
-
-        # Hermitian symmetry
-        if p != q
-            ChC_blocks[:, :, q, p] .= ChC_blocks[:, :, p, q]'
+            # Hermitian symmetry
+            if p != q
+                ChC_blocks[:, :, q, p] .= ChC_blocks[:, :, p, q]'
+            end
         end
     end
 
