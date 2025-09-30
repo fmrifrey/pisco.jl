@@ -23,13 +23,14 @@ idata = iftnd(kdata; dims=1:3);
 
 # set PISCO techniques
 kernel_shape = 1; # (0 for rect, 1 for circle)
-fft_C_mtx = 1; # option to approximate ChC with FFTs
-sketched_SVD = 1; # option to used sketched (randomized) SVD
-subspace_itr_G = 0; # option to use subspace iteration to compute nullspace vectors of G
+fft_C_mtx = true; # option to approximate ChC with FFTs
+sketched_SVD = true; # option to used sketched (randomized) SVD
+subspace_itr_G = false; # option to use subspace iteration to compute nullspace vectors of G
+fft_interp = true; # option to use FFTs to interpolate G matrix
 
 # set PISCO parameters
 τ = Int(3); # neighborhood size (radius)
-N_cal = 32; # size of calibration region
+N_cal = (32,32,32); # size of calibration region
 σ_thresh = 0.002; # threshold for singular values
 d_sk = 50; # sketch dimension for SVD of ChC (overestimation of the rank)
 N_gzp = 24; # number of vo/pixels to interpolate (zero-pad) in each dimension of G matrix
@@ -42,12 +43,16 @@ smaps, λ = pisco_smaps(kdata;
     fft_C_mtx=fft_C_mtx,
     sketched_SVD=sketched_SVD,
     subspace_itr_G=subspace_itr_G,
+    fft_interp=fft_interp,
+    τ=τ,
+    N_cal=N_cal,
+    N=N,
     σ_thresh=σ_thresh,
     d_sk=d_sk,
     N_gzp=N_gzp,
     α=α,
     L=L,
-    verbose=1);
+    verbose=true);
 
 # create sensitivity encoding operator
 S = LinearMapAA(
