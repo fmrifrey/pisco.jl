@@ -231,7 +231,6 @@ end
 
 function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
 
-    println("ChC_matrix_fft") # debug
     # get sizes and parameters
     nd = ndims(kcal) - 1; # number of spatial dimensions
     Q = size(kcal, nd+1); # number of coils
@@ -242,29 +241,22 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     # precompute ft of zero-padded s_q for q = 1,...Q
     N_pad = 2^(ceil(log2(N_cal + 2 * τ)))
     ρ = ftnd(kcal, N=(Int.(N_pad * ones(nd))..., Q), dims=1:nd)
-
-    # columns of each C_p^H C_q block
-    pad_cidx = grid(ntuple(_ -> -floor(Int, N_pad / 2):floor(Int, N_pad / 2)-even_RL(N_pad / 2), nd)...) # linear indices for padded calibration region
-    patch_idcs = floor(Int, N_pad / 2) + 1 .+ Λ_cidx # subscript indices for filling patches in ChC matrix
-    φ = cis.(-2 * pi * (Λ_cidx / N_pad) * pad_cidx') # phase kernel for applying shifts in fourier domain
+    patch_cidx = ntuple(d -> vec(floor(Int, N_pad / 2) + 1 .- Λ_cidx[:,d]' .+ Λ_cidx[:,d]), nd) # subscript indices for filling patches in ChC matrix
+    patch_lidx = LinearIndices(ones(Int, Int.(N_pad * ones(nd))...))[map(CartesianIndex, patch_cidx...)] # linear indices for filling patches in ChC matrix
     ChC_blocks = Array{T}(undef, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
-    let φ_local = reshape(conj.(φ'), (Int.(N_pad*ones(nd))..., Λ_len))
-        @floop ThreadedEx() for (q, p) in Iterators.flatmap(q -> ((q, p) for p in q:Q), 1:Q)
-            # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
-            ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., p]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
+    @floop ThreadedEx() for q in 1:Q # loop through coil pairs
 
-            # calculate δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n])
-            φρρ_ipq = φ_local .* ρρ_pq # φ_i * conj(ρ_p) * ρ_q: i in (nd+1)th dimension
-            δss_ipq = iftnd(φρρ_ipq; dims=1:nd) # δ[n - n_i] ⊗ s_p[n] ⊗ conj(s_q[-n]) = ift(φ_i * conj(ρ_p) * ρ_q)
+        # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
+        ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., q:Q]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
+        ss_pq = iftnd(ρρ_pq; dims=1:nd) # s_p[n] ⊗ conj(s_q[-n])
 
-            # extract patch and write to ChC pq block
-            ChC_blocks[:,:,p,q] .= (@view δss_ipq[CartesianIndex.(Tuple.(eachrow(patch_idcs))), :, :])
+        # reshape ss_pq into 2D array for indexing
+        b = reshape(ss_pq, :, Q-q+1)[patch_lidx, :]
 
-            # Hermitian symmetry
-            if p != q
-                ChC_blocks[:, :, q, p] .= ChC_blocks[:, :, p, q]'
-            end
-        end
+        # extract patch and write to ChC pq block
+        ChC_blocks[:,:,q:Q,q] .= reshape(b, Λ_len, Λ_len, Q-q+1)
+        ChC_blocks[:,:,q,q+1:Q] .= permutedims(conj.(ChC_blocks[:,:,q+1:Q,q]), (2,1,3)) # Hermitian symmetry
+
     end
 
     # reshape blocks
@@ -312,7 +304,12 @@ function G_matrix(W, Λ_cidx, N_cal, N_gzp)
 
     # compute ft of modulated G
     ft_G_zp = zero_pad(conj.(ft_G) .* mod_pattern; N=((N_cal + N_gzp) * ones(Int, nd)..., Q, Q))
-    G = 1/Λ_len * fft(ft_G_zp, 1:nd) .* φ
+    G = Array{T}(undef, (N_cal + N_gzp) * ones(Int, nd)..., Q, Q)
+    let φ_local = φ
+        @floop for q in 1:Q
+            G[ntuple(_ -> Colon(), nd+1)...,q] = 1/Λ_len * fft(ft_G_zp[ntuple(_ -> Colon(), nd+1)...,q], 1:nd) .* φ_local
+        end
+    end
 
     return G
 end
