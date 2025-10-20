@@ -38,7 +38,7 @@ N_gzp = 24; # number of vo/pixels to interpolate (zero-pad) in each dimension of
 L = 1; # number of sensitivity map sets to estimate
 
 # estimate the sensitivity maps by calling the pisco_smaps function
-smaps, λ = pisco_smaps(kdata;
+smaps,λ,_ = pisco_smaps(kdata;
     kernel_shape=kernel_shape,
     fft_C_mtx=fft_C_mtx,
     sketched_SVD=sketched_SVD,
