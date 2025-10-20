@@ -219,7 +219,7 @@ function pisco_smaps(kcal;
         println("total time: ", t_ChC + t_nullspace_ChC + t_G + t_nullspace_G, " seconds")
     end
 
-    return smaps, λ
+    return smaps, λ, σ
 end
 
 function C_matrix(kcal, Λ_cidx, N_cal)
