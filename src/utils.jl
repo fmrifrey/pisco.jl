@@ -2,9 +2,6 @@ using LinearAlgebra
 using FFTW
 using LinearMapsAA
 
-# export all functions
-export even_RL, center_idcs, gausswin, hanningwin, grid, zero_pad, ftnd, iftnd, cg, subspace_iteration
-
 # even/odd indexing function
 function even_RL(x)
     return Int(1 - mod(x, 2.0)); # helps with using odd data points
