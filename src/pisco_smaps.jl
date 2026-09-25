@@ -2,9 +2,6 @@ using FLoops
 using LinearAlgebra
 using Revise
 
-# export all functions
-export pisco_smaps, C_matrix, ChC_matrix_fft, G_matrix
-
 function pisco_smaps(kcal;
     # PISCO tecnique flags
     kernel_shape=1, # (0 for rect, 1 for circle)
