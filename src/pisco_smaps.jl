@@ -1,5 +1,6 @@
 using FLoops
 using LinearAlgebra
+BLAS.set_num_threads(1)
 using Revise
 
 function pisco_smaps(kcal;
@@ -19,6 +20,7 @@ function pisco_smaps(kcal;
     N_gzp=24, # number of vo/pixels to interpolate (zero-pad) in each dimension of G matrix
     α=100, # Gaussian window parameter for phase normalization
     L=1, # number of sensitivity map sets to estimate
+    dtype=nothing, # (real) data type, (nothing = use kdata datatype)
 
     # other options
     verbose=true # option to print out debug info
@@ -34,7 +36,11 @@ function pisco_smaps(kcal;
         kcal = kcal[cal_sidx..., :];
     end
     Q = size(kcal, nd + 1) # number of channels
-    T = eltype(kcal) # data type
+    cdtype = isnothing(dtype) ? eltype(kcal) : (Complex{dtype})
+    dtype = typeof(real(zero(cdtype)))
+
+    # convert data type
+    kcal = cdtype.(kcal)
 
     # set N if not provided
     if isnothing(N)
@@ -67,6 +73,7 @@ function pisco_smaps(kcal;
         println("\tN_gzp: ", N_gzp)
         println("\tα (Gaussian window parameter): ", α)
         println("\tL (number of sensitivity maps to estimate): ", L)
+        println("\tdata type: ", dtype)
         println("forming convolution gram matrix ChC... ")
     end
 
@@ -80,6 +87,8 @@ function pisco_smaps(kcal;
     end
     tend_ChC = time();
 
+    @show eltype(ChC)
+
     # print update with computation time
     t_ChC = tend_ChC - t0_ChC
     if verbose
@@ -91,7 +100,7 @@ function pisco_smaps(kcal;
     # compute the null space of ChC
     t0_nullspace_ChC = time();
     if sketched_SVD # full SVD of ChC
-        S_sk = 1 / sqrt(d_sk) * (randn(d_sk, Λ_len * Q) + 1im * randn(d_sk, Λ_len * Q))
+        S_sk = cdtype.(1 / sqrt(d_sk) * randn(d_sk, Λ_len * Q) + 1im * randn(d_sk, Λ_len * Q))
         (~, σ, V) = svd(S_sk * ChC)
     else # sketched SVD of ChC
         (~, σ, V) = svd(ChC)
@@ -100,6 +109,8 @@ function pisco_smaps(kcal;
     Vr = V[:, 1:r] # get the column space basis of C
     W = I - Vr * Vr' # get null space projection matrix
     tend_nullspace_ChC = time();
+
+    @show eltype(W)
 
     # print update with computation time
     t_nullspace_ChC = tend_nullspace_ChC - t0_nullspace_ChC
@@ -129,35 +140,34 @@ function pisco_smaps(kcal;
     t0_nullspace_G = time();
     if subspace_itr_G
         let G_local = G
-            result_smaps = Vector{Array{T}}(undef, prod(N_cal .+ N_gzp))
-            result_λ = Vector{Vector{T}}(undef, prod(N_cal .+ N_gzp))
+            result_smaps = Vector{Array{cdtype}}(undef, prod(N_cal .+ N_gzp))
+            result_λ = Vector{Vector{cdtype}}(undef, prod(N_cal .+ N_gzp))
             @floop ThreadedEx() for x in 1:prod(N_cal .+ N_gzp) # loop through vo/pixels
                 σ,V = subspace_iteration((@view G_local[:, :, x]), L; maxit=30, tol=1e-6)
                 result_smaps[x] = V[:, end-L+1:end]
                 result_λ[x] = σ
             end
-            smaps_lores = Array{T}(undef, Q, L, prod(N_cal .+ N_gzp))
-            λ_lores = Array{T}(undef, L, prod(N_cal .+ N_gzp))
+            smaps_lores = Array{cdtype}(undef, Q, L, prod(N_cal .+ N_gzp))
+            λ_lores = Array{cdtype}(undef, L, prod(N_cal .+ N_gzp))
             for x in 1:prod(N_cal .+ N_gzp)
                 smaps_lores[:, :, x] .= result_smaps[x]
                 λ_lores[:, x] .= result_λ[x]
             end
         end
     else # SVD
-        let G_local = G
-            result_smaps = Vector{Array{T}}(undef, prod(N_cal .+ N_gzp))
-            result_λ = Vector{Vector{T}}(undef, prod(N_cal .+ N_gzp))
-            @floop ThreadedEx() for x in 1:prod(N_cal .+ N_gzp) # loop through vo/pixels
-                res = svd((@view G_local[:, :, x]))
-                result_smaps[x] = res.V[:, end-L+1:end]
-                result_λ[x] = res.S
-            end
-            smaps_lores = Array{T}(undef, Q, L, prod(N_cal .+ N_gzp))
-            λ_lores = Array{T}(undef, Q, prod(N_cal .+ N_gzp))
-            for x in 1:prod(N_cal .+ N_gzp)
-                smaps_lores[:, :, x] .= result_smaps[x]
-                λ_lores[:, x] .= result_λ[x]
-            end
+        nvox = prod(N_cal .+ N_gzp)
+        smaps_lores = Array{cdtype}(undef, Q, L, nvox)
+        λ_lores = Array{dtype}(undef, Q, nvox)
+        G_local = G
+        @floop ThreadedEx() for x in 1:nvox
+            # svd! overwrites this page of G
+            F = svd!(@view(G_local[:, :, x]); full=false)
+
+            # Vt rows correspond to columns of V
+            @views smaps_lores[:, :, x] .=
+                adjoint(F.Vt[end-L+1:end, :])
+
+            @views λ_lores[:, x] .= F.S
         end
     end
     smaps_lores = permutedims(reshape(smaps_lores, Q, L, (N_cal .+ N_gzp)...), ((3:nd+2)..., 1, 2))
@@ -173,7 +183,7 @@ function pisco_smaps(kcal;
     end
 
     # create nd apodizing window for phase normalization
-    apodizing_window = ones(T, (N_cal .+ N_gzp)...)
+    apodizing_window = ones(cdtype, (N_cal .+ N_gzp)...)
     for d in 1:nd
         shape = ntuple(i -> i == d ? (N_cal[d] + N_gzp) : 1, nd)
         apodizing_window .*= reshape(gausswin(N_cal[d] + N_gzp; α), shape)
