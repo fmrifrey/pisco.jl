@@ -1,4 +1,3 @@
-using FLoops
 using LinearAlgebra
 BLAS.set_num_threads(1)
 using Revise
@@ -87,8 +86,6 @@ function pisco_smaps(kcal;
     end
     tend_ChC = time();
 
-    @show eltype(ChC)
-
     # print update with computation time
     t_ChC = tend_ChC - t0_ChC
     if verbose
@@ -105,12 +102,10 @@ function pisco_smaps(kcal;
     else # sketched SVD of ChC
         (~, σ, V) = svd(ChC)
     end
-    r = count(σ / σ[1] .> σ_thresh)
+    r = count(σ / σ[1] .> σ_thresh^2)
     Vr = V[:, 1:r] # get the column space basis of C
     W = I - Vr * Vr' # get null space projection matrix
     tend_nullspace_ChC = time();
-
-    @show eltype(W)
 
     # print update with computation time
     t_nullspace_ChC = tend_nullspace_ChC - t0_nullspace_ChC
@@ -139,39 +134,25 @@ function pisco_smaps(kcal;
     # estimate sensitivity maps from G
     t0_nullspace_G = time();
     if subspace_itr_G
-        let G_local = G
-            result_smaps = Vector{Array{cdtype}}(undef, prod(N_cal .+ N_gzp))
-            result_λ = Vector{Vector{cdtype}}(undef, prod(N_cal .+ N_gzp))
-            @floop ThreadedEx() for x in 1:prod(N_cal .+ N_gzp) # loop through vo/pixels
-                σ,V = subspace_iteration((@view G_local[:, :, x]), L; maxit=30, tol=1e-6)
-                result_smaps[x] = V[:, end-L+1:end]
-                result_λ[x] = σ
-            end
-            smaps_lores = Array{cdtype}(undef, Q, L, prod(N_cal .+ N_gzp))
-            λ_lores = Array{cdtype}(undef, L, prod(N_cal .+ N_gzp))
-            for x in 1:prod(N_cal .+ N_gzp)
-                smaps_lores[:, :, x] .= result_smaps[x]
-                λ_lores[:, x] .= result_λ[x]
-            end
-        end
+        error("subspace iteration has not yet been implemented, sorry!")
     else # SVD
         nvox = prod(N_cal .+ N_gzp)
         smaps_lores = Array{cdtype}(undef, Q, L, nvox)
-        λ_lores = Array{dtype}(undef, Q, nvox)
+        λ_lores = Array{dtype}(undef, L, nvox)
         G_local = G
-        @floop ThreadedEx() for x in 1:nvox
+        Threads.@threads :dynamic for x in 1:nvox
             # svd! overwrites this page of G
             F = svd!(@view(G_local[:, :, x]); full=false)
 
             # Vt rows correspond to columns of V
             @views smaps_lores[:, :, x] .=
-                adjoint(F.Vt[end-L+1:end, :])
+                adjoint(reverse(F.Vt[end-L+1:end, :], dims=1))
 
-            @views λ_lores[:, x] .= F.S
+            @views λ_lores[:, x] .= reverse(F.S[end-L+1:end])
         end
     end
     smaps_lores = permutedims(reshape(smaps_lores, Q, L, (N_cal .+ N_gzp)...), ((3:nd+2)..., 1, 2))
-    λ_lores = permutedims(reshape(λ_lores, Q, (N_cal .+ N_gzp)...), ((2:nd+1)..., 1))
+    λ_lores = permutedims(reshape(λ_lores, L, (N_cal .+ N_gzp)...), ((2:nd+1)..., 1))
     tend_nullspace_G = time();
 
     # print update with computation time
@@ -206,7 +187,7 @@ function pisco_smaps(kcal;
 
     if fft_interp
         # create nd hanning window for fft interpolation
-        w_sm = ones(T, (N_cal .+ N_gzp)...)
+        w_sm = ones(cdtype, (N_cal .+ N_gzp)...)
         for d in 1:nd
             shape = ntuple(i -> i == d ? (N_cal[d] + N_gzp) : 1, nd)
             w_sm .*= reshape(hanningwin(N_cal[d] + N_gzp), shape)
@@ -214,7 +195,7 @@ function pisco_smaps(kcal;
 
         # interpolate sensitivity maps using fft
         smaps = iftnd(ftnd(smaps_lores_corr; dims=1:nd) .* w_sm; dims=1:nd, N=(N..., Q, L))
-        λ = iftnd(ftnd(λ_lores; dims=1:nd) .* w_sm; dims=1:nd, N=(N..., Q))
+        λ = iftnd(ftnd(λ_lores; dims=1:nd) .* w_sm; dims=1:nd, N=(N..., L))
     else
         smaps = smaps_lores_corr
         λ = λ_lores
@@ -265,7 +246,7 @@ function ChC_matrix_fft(kcal, Λ_cidx, N_cal)
     patch_cidx = ntuple(d -> vec(floor(Int, N_pad[d] / 2) + 1 .- Λ_cidx[:,d]' .+ Λ_cidx[:,d]), nd) # subscript indices for filling patches in ChC matrix
     patch_lidx = LinearIndices(ones(Int, N_pad...))[map(CartesianIndex, patch_cidx...)] # linear indices for filling patches in ChC matrix
     ChC_blocks = Array{T}(undef, Λ_len, Λ_len, Q, Q) # preallocate ChC blocks
-    @floop ThreadedEx() for q in 1:Q # loop through coil pairs
+    Threads.@threads :dynamic for q in 1:Q # loop through coil pairs
 
         # compute ft(s_p[n] ⊗ conj(s_q[-n])) = ρ_p* * ρ_q
         ρρ_pq = conj.(ρ[ntuple(_ -> Colon(), nd)..., q:Q]) .* ρ[ntuple(_ -> Colon(), nd)..., q]
@@ -327,7 +308,7 @@ function G_matrix(W, Λ_cidx, N_cal, N_gzp)
     ft_G_zp = zero_pad(conj.(ft_G) .* mod_pattern; N=((N_cal .+ N_gzp)..., Q, Q))
     G = Array{T}(undef, (N_cal .+ N_gzp)..., Q, Q)
     let φ_local = φ
-        @floop for q in 1:Q
+        Threads.@threads :dynamic for q in 1:Q
             G[ntuple(_ -> Colon(), nd+1)...,q] = 1/Λ_len * fft(ft_G_zp[ntuple(_ -> Colon(), nd+1)...,q], 1:nd) .* φ_local
         end
     end
