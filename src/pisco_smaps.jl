@@ -133,21 +133,15 @@ function pisco_smaps(kcal;
 
     # estimate sensitivity maps from G
     t0_nullspace_G = time();
+    nvox = size(G,3)
+    smaps_lores = Array{cdtype}(undef, Q, L, nvox)
+    λ_lores = Array{dtype}(undef, L, nvox)
     if subspace_itr_G
         error("subspace iteration has not yet been implemented, sorry!")
     else # SVD
-        nvox = prod(N_cal .+ N_gzp)
-        smaps_lores = Array{cdtype}(undef, Q, L, nvox)
-        λ_lores = Array{dtype}(undef, L, nvox)
-        G_local = G
         Threads.@threads :dynamic for x in 1:nvox
-            # svd! overwrites this page of G
-            F = svd!(@view(G_local[:, :, x]); full=false)
-
-            # Vt rows correspond to columns of V
-            @views smaps_lores[:, :, x] .=
-                adjoint(reverse(F.Vt[end-L+1:end, :], dims=1))
-
+            F = svd!(@view(G[:, :, x]); full=false, alg=LinearAlgebra.QRIteration())
+            @views smaps_lores[:, :, x] .= adjoint(reverse(F.Vt[end-L+1:end, :], dims=1))
             @views λ_lores[:, x] .= reverse(F.S[end-L+1:end])
         end
     end
