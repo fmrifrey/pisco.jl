@@ -102,7 +102,7 @@ function pisco_smaps(kcal;
     else # sketched SVD of ChC
         (~, σ, V) = svd(ChC)
     end
-    r = count(σ / σ[1] .> σ_thresh^2)
+    r = count(σ / σ[1] .> σ_thresh)
     Vr = V[:, 1:r] # get the column space basis of C
     W = I - Vr * Vr' # get null space projection matrix
     tend_nullspace_ChC = time();
