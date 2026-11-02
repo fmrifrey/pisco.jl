@@ -9,6 +9,6 @@ CurrentModule = pisco
 This Julia package
 [(pisco.jl)](https://github.com/fmrifrey/pisco.jl)
 provides tools
-for estimating fieldmaps in MRI.
+for estimating sensitivity and spatiotemporal maps in MRI.
 
 See the "Examples" for details.
