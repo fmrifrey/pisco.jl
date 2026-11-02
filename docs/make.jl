@@ -83,7 +83,7 @@ Documenter.makedocs(;
     sitename = "$repo.jl",
     format,
     pages = [
-        "Home" => "index.md",
+        "Home" => "src/index.md",
     ],
 )
 

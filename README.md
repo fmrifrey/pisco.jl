@@ -5,12 +5,12 @@ https://github.com/fmrifrey/pisco.jl
 [![docs-stable][docs-stable-img]][docs-stable-url]
 [![docs-dev][docs-dev-img]][docs-dev-url]
 [![action][action-img]][action-url]
-[![Aqua QA][aqua-img]][aqua-url]
-[![codecov][codecov-img]][codecov-url]
-[![deps][deps-img]][deps-url]
+<!-- [![Aqua QA][aqua-img]][aqua-url] -->
+<!-- [![codecov][codecov-img]][codecov-url] -->
+<!-- [![deps][deps-img]][deps-url] -->
 [![license][license-img]][license-url]
-[![pkgeval][pkgeval-img]][pkgeval-url]
-[![version][ver-img]][ver-url]
+<!-- [![pkgeval][pkgeval-img]][pkgeval-url] -->
+<!-- [![version][ver-img]][ver-url] -->
 
 This Julia language repo provides methods for estimating sensitivity and spatiotemporal maps in MRI,
 written by David Frey (djfrey@umich.edu), based on similar [matlab-based software package](github.com/ralobos/PISCO) by Rodrigo Lobos (rlobos@umich.edu)
